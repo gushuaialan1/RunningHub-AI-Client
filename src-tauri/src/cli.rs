@@ -36,6 +36,8 @@ pub enum CliCommand {
         api_key: Option<String>,
         #[arg(short, long)]
         nodes: Option<String>,
+        #[arg(short, long)]
+        prompt: Option<String>,
         #[arg(short, long, default_value = "./output")]
         output: String,
     },
@@ -128,6 +130,7 @@ pub async fn run_cli(command: CliCommand) -> anyhow::Result<()> {
             webapp_id,
             api_key,
             nodes,
+            prompt,
             output,
         } => {
             let config = load_config();
@@ -155,13 +158,41 @@ pub async fn run_cli(command: CliCommand) -> anyhow::Result<()> {
                 result.nodes
             };
 
+            // Auto-override prompt node if --prompt is provided
+            if let Some(prompt_text) = prompt {
+                let mut overridden = false;
+                for node in &mut node_list {
+                    let is_prompt = node.field_name.to_lowercase().contains("prompt")
+                        || node.field_name.to_lowercase().contains("正提示词")
+                        || node.field_name.to_lowercase().contains("text")
+                        || node.node_name.to_lowercase().contains("prompt");
+                    if is_prompt && node.field_type == "STRING" {
+                        println!(
+                            "{} {}.{} = {}",
+                            "Overriding prompt:".yellow(),
+                            node.node_name,
+                            node.field_name,
+                            &prompt_text
+                        );
+                        node.field_value = prompt_text.clone();
+                        overridden = true;
+                    }
+                }
+                if !overridden {
+                    println!(
+                        "{}",
+                        "Warning: --prompt provided but no prompt field was found. Use 'rh nodes' to inspect fields.".yellow()
+                    );
+                }
+            }
+
             node_list = resolve_node_files(&client, &key, node_list).await?;
 
             println!("{}", "Submitting task...".blue());
             let result = client.submit_task(&key, &wid, &node_list).await?;
             println!("{} {}", "Task ID:".green(), result.task_id);
 
-            let outputs = client.poll_task(&key, &result.task_id, 3).await?;
+            let outputs = client.poll_task(&key, &result.task_id, 3, 1800).await?;
             println!(
                 "{} {}",
                 "Task completed!".green(),
@@ -171,10 +202,15 @@ pub async fn run_cli(command: CliCommand) -> anyhow::Result<()> {
             fs::create_dir_all(&output)?;
             for (i, out) in outputs.iter().enumerate() {
                 let url = crate::api::build_file_url(&out.file_url);
-                let ext = out.file_type.as_deref().unwrap_or("png");
-                let path = format!("{}/task_1_output_{}.{}", output, i + 1, ext);
-                download_file(&url, &path).await?;
-                println!("{} {}", "Saved:".green(), path);
+                let ext = out
+                    .file_type
+                    .as_deref()
+                    .map(crate::api::mime_to_ext)
+                    .unwrap_or_else(|| "png".to_string());
+                let path = std::path::Path::new(&output)
+                    .join(format!("task_1_output_{}.{}", i + 1, ext));
+                client.download_file(&url, &path).await?;
+                println!("{} {}", "Saved:".green(), path.display());
             }
         }
         CliCommand::Batch {
@@ -223,7 +259,7 @@ pub async fn run_cli(command: CliCommand) -> anyhow::Result<()> {
                             "] Submitted:".blue(),
                             result.task_id
                         );
-                        let outputs = client.poll_task(&key, &result.task_id, 3).await?;
+                        let outputs = client.poll_task(&key, &result.task_id, 3, 1800).await?;
                         println!(
                             "{} {} {} {}",
                             "[Task".green(),
@@ -233,21 +269,25 @@ pub async fn run_cli(command: CliCommand) -> anyhow::Result<()> {
                         );
                         for (i, out) in outputs.iter().enumerate() {
                             let url = crate::api::build_file_url(&out.file_url);
-                            let ext = out.file_type.as_deref().unwrap_or("png");
-                            let path = format!(
-                                "{}/task_{}_output_{}.{}",
-                                output,
-                                index + 1,
-                                i + 1,
-                                ext
-                            );
-                            download_file(&url, &path).await?;
+                            let ext = out
+                                .file_type
+                                .as_deref()
+                                .map(crate::api::mime_to_ext)
+                                .unwrap_or_else(|| "png".to_string());
+                            let path = std::path::Path::new(&output)
+                                .join(format!(
+                                    "task_{}_output_{}.{}",
+                                    index + 1,
+                                    i + 1,
+                                    ext
+                                ));
+                            client.download_file(&url, &path).await?;
                             println!(
                                 "{} {} {} {}",
                                 "[Task".green(),
                                 index + 1,
                                 "] Saved:".green(),
-                                path
+                                path.display()
                             );
                         }
                         Ok::<_, anyhow::Error>(())
@@ -352,9 +392,4 @@ async fn resolve_node_files(
     Ok(result)
 }
 
-async fn download_file(url: &str, path: &str) -> anyhow::Result<()> {
-    let resp = reqwest::get(url).await?;
-    let bytes = resp.bytes().await?;
-    fs::write(path, bytes)?;
-    Ok(())
-}
+// Download helper is now on ApiClient

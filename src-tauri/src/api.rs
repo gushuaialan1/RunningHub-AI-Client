@@ -93,6 +93,28 @@ pub fn build_file_url(value: &str) -> String {
     format!("{}/task/openapi/view/{}", API_HOST, value)
 }
 
+/// Map MIME type or raw extension to a proper file extension.
+pub fn mime_to_ext(mime: &str) -> String {
+    let lower = mime.to_lowercase();
+    let s = lower.as_str();
+    match s {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "application/pdf" => "pdf",
+        s if s.contains('/') => s.split('/').nth(1).unwrap_or("bin"),
+        s => s,
+    }
+    .to_string()
+}
+
 pub struct ApiClient {
     client: Client,
 }
@@ -273,26 +295,54 @@ impl ApiClient {
         Ok(AppListResult { records, total })
     }
 
+    /// Poll task with progress indicator and global timeout (default 30 min).
     pub async fn poll_task(
         &self,
         api_key: &str,
         task_id: &str,
         interval_secs: u64,
+        max_wait_secs: u64,
     ) -> anyhow::Result<Vec<TaskOutput>> {
+        let start = std::time::Instant::now();
+        let mut dots = 0u8;
+        print!("  Polling task {} ", task_id);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
         loop {
             tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+            let elapsed = start.elapsed().as_secs();
+            if elapsed > max_wait_secs {
+                println!();
+                anyhow::bail!(
+                    "Task polling timed out after {} seconds",
+                    max_wait_secs
+                );
+            }
+
+            print!(".");
+            dots += 1;
+            if dots % 60 == 0 {
+                println!(" [{}s]", elapsed);
+                print!("  ");
+            }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+
             let result = self.query_task_outputs(api_key, task_id).await?;
             if result.code != 0 {
+                println!();
                 anyhow::bail!("Query failed: {}", result.msg);
             }
             let data = result.data.unwrap_or_default();
             if let Ok(outputs) = serde_json::from_value::<Vec<TaskOutput>>(data.clone()) {
                 if !outputs.is_empty() {
+                    println!(" [done in {}s]", elapsed);
                     return Ok(outputs);
                 }
             }
             if let Some(status) = data.get("status").and_then(|s| s.as_str()) {
                 if status == "FAILED" {
+                    println!();
                     let reason = data
                         .get("failedReason")
                         .and_then(|r| r.get("exception_message"))
@@ -302,5 +352,22 @@ impl ApiClient {
                 }
             }
         }
+    }
+
+    /// Download file with timeout using the internal client.
+    pub async fn download_file(
+        &self,
+        url: &str,
+        path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let resp = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await?;
+        let bytes = resp.bytes().await?;
+        tokio::fs::write(path, bytes).await?;
+        Ok(())
     }
 }
