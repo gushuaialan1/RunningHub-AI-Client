@@ -10,7 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
-src-tauri
+src-tauri/target
 build_unix.sh
 build_windows.bat
 *.local
@@ -36,6 +36,10 @@ beifen/
 response.json
 *.ps1
 api_test_search*.txt
+.claude/
+
+# Sub-projects
+RH-Hub/
 
 # Docs (keep only root README.md)
 *.md

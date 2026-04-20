@@ -1,0 +1,21 @@
+[package]
+name = "runninghub-client"
+version = "1.5.5"
+description = "RunningHub AI CLI Client"
+authors = ["RunningHub Client"]
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "rh"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+dirs = "6"
+colored = "3"
